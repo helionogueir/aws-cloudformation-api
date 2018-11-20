@@ -1,0 +1,308 @@
+{
+    "AWSTemplateFormatVersion": "2010-09-09",
+    "Description": "AWS API Gateway + Lambda implementation with AWS CloudFormation. More informations contact Helio Nogueira <helio.nogueira@gmail.com>.",
+    "Parameters": {
+        "VersionName": {
+            "Type": "String",
+            "Description": "Number of Version",
+            "MinLength": "5",
+            "MaxLength": "5",
+            "Default": "v1811",
+            "AllowedPattern": "^(v)(\\d{4})$"
+        },
+        "LambdaFunctionVpcSubnetIds": {
+            "Type": "List<AWS::EC2::Subnet::Id>",
+            "Description": "Lambda Function VPC Subnets"
+        },
+        "LambdaFunctionVpcSGIds": {
+            "Type": "List<AWS::EC2::SecurityGroup::Id>",
+            "Description": "Lambda Function VPC Security Groups"
+        }
+    },
+    "Mappings": {
+        "Environment": {
+            "Constant": {
+                "Name": "helionogueir-aws-cloudformation-api"
+            }
+        }
+    },
+    "Resources": {
+        "LambdaFunctionRole": {
+            "Type": "AWS::IAM::Role",
+            "Properties": {
+                "RoleName": {
+                    "Fn::FindInMap": ["Environment", "Constant", "Name"]
+                },
+                "AssumeRolePolicyDocument": {
+                    "Version": "2012-10-17",
+                    "Statement": [{
+                        "Effect": "Allow",
+                        "Principal": {
+                            "Service": ["lambda.amazonaws.com"]
+                        },
+                        "Action": ["sts:AssumeRole"]
+                    }]
+                },
+                "Path": "/service-role/",
+                "Policies": [{
+                    "PolicyName": "CloudWatchLogsWriteAccess",
+                    "PolicyDocument": {
+                        "Version": "2012-10-17",
+                        "Statement": [{
+                            "Effect": "Allow",
+                            "Action": [
+                                "logs:CreateLogGroup",
+                                "logs:CreateLogStream",
+                                "logs:PutLogEvents"
+                            ],
+                            "Resource": "*"
+                        }]
+                    }
+                }, {
+                    "PolicyName": "EC2NetworkInterfaceAccess",
+                    "PolicyDocument": {
+                        "Version": "2012-10-17",
+                        "Statement": [{
+                            "Effect": "Allow",
+                            "Action": [
+                                "ec2:CreateNetworkInterface",
+                                "ec2:DescribeNetworkInterfaces",
+                                "ec2:DeleteNetworkInterface"
+                            ],
+                            "Resource": "*"
+                        }]
+                    }
+                }]
+            }
+        },
+        "LambdaFunction": {
+            "Type": "AWS::Lambda::Function",
+            "DependsOn": ["LambdaFunctionRole"],
+            "Properties": {
+                "FunctionName": {
+                    "Fn::FindInMap": ["Environment", "Constant", "Name"]
+                },
+                "Description": {
+                    "Fn::FindInMap": ["Environment", "Constant", "Name"]
+                },
+                "VpcConfig": {
+                    "SecurityGroupIds": {
+                        "Ref": "LambdaFunctionVpcSGIds"
+                    },
+                    "SubnetIds": {
+                        "Ref": "LambdaFunctionVpcSubnetIds"
+                    }
+                },
+                "Code": {
+                    "ZipFile": "exports.handler = (event, context, callback) => { callback(null, {\"statusCode\": ((undefined !== event.pathParameters.statusCode) ? parseInt(event.pathParameters.statusCode) : 200), \"body\": JSON.stringify({\"text\":\"Hello World!\"}), headers: {\"Access-Control-Allow-Origin\": \"*\", \"Content-Type\":\"application/json\"},\"isBase64Encoded\": false}) };"
+                },
+                "Role": {
+                    "Fn::GetAtt": ["LambdaFunctionRole", "Arn"]
+                },
+                "Timeout": 5,
+                "MemorySize": 128,
+                "Handler": "index.handler",
+                "Runtime": "nodejs8.10"
+            }
+        },
+        "ApiGatewayRestApi": {
+            "Type": "AWS::ApiGateway::RestApi",
+            "Properties": {
+                "Name": {
+                    "Fn::FindInMap": ["Environment", "Constant", "Name"]
+                },
+                "FailOnWarnings": true
+            }
+        },
+        "ApiGatewayLambdaPermission": {
+            "Type": "AWS::Lambda::Permission",
+            "DependsOn": ["LambdaFunction", "ApiGatewayRestApi"],
+            "Properties": {
+                "Action": "lambda:invokeFunction",
+                "Principal": "apigateway.amazonaws.com",
+                "FunctionName": {
+                    "Fn::GetAtt": ["LambdaFunction", "Arn"]
+                },
+                "SourceArn": {
+                    "Fn::Join": ["", ["arn:aws:execute-api:", {
+                        "Ref": "AWS::Region"
+                    }, ":", {
+                        "Ref": "AWS::AccountId"
+                    }, ":", {
+                        "Ref": "ApiGatewayRestApi"
+                    }, "/*"]]
+                }
+            }
+        },
+        "ApiGatewayResource": {
+            "Type": "AWS::ApiGateway::Resource",
+            "DependsOn": ["ApiGatewayRestApi"],
+            "Properties": {
+                "RestApiId": {
+                    "Ref": "ApiGatewayRestApi"
+                },
+                "ParentId": {
+                    "Fn::GetAtt": ["ApiGatewayRestApi", "RootResourceId"]
+                },
+                "PathPart": {
+                    "Fn::FindInMap": ["Environment", "Constant", "Name"]
+                }
+            }
+        },
+        "ApiGatewayResourceOptions": {
+            "Type": "AWS::ApiGateway::Method",
+            "DependsOn": ["ApiGatewayResource"],
+            "Properties": {
+                "HttpMethod": "OPTIONS",
+                "AuthorizationType": "NONE",
+                "RestApiId": {
+                    "Ref": "ApiGatewayRestApi"
+                },
+                "ResourceId": {
+                    "Ref": "ApiGatewayResource"
+                },
+                "MethodResponses": [{
+                    "StatusCode": "200",
+                    "ResponseParameters": {
+                        "method.response.header.Access-Control-Allow-Headers": true,
+                        "method.response.header.Access-Control-Allow-Methods": true,
+                        "method.response.header.Access-Control-Allow-Origin": true
+                    }
+                }],
+                "Integration": {
+                    "Type": "MOCK",
+                    "RequestTemplates": {
+                        "application/json": "{\"statusCode\":200}"
+                    },
+                    "IntegrationResponses": [{
+                        "StatusCode": "200",
+                        "ResponseParameters": {
+                            "method.response.header.Access-Control-Allow-Headers": "'Content-Type'",
+                            "method.response.header.Access-Control-Allow-Methods": "'GET,OPTIONS'",
+                            "method.response.header.Access-Control-Allow-Origin": "'*'"
+                        }
+                    }]
+                }
+            }
+        },
+        "ApiGatewayParameter": {
+            "Type": "AWS::ApiGateway::Resource",
+            "DependsOn": ["ApiGatewayResource"],
+            "Properties": {
+                "RestApiId": {
+                    "Ref": "ApiGatewayRestApi"
+                },
+                "ParentId": {
+                    "Ref": "ApiGatewayResource"
+                },
+                "PathPart": "{statusCode}"
+            }
+        },
+        "ApiGatewayParameterOptions": {
+            "Type": "AWS::ApiGateway::Method",
+            "DependsOn": ["ApiGatewayParameter"],
+            "Properties": {
+                "HttpMethod": "OPTIONS",
+                "AuthorizationType": "NONE",
+                "RestApiId": {
+                    "Ref": "ApiGatewayRestApi"
+                },
+                "ResourceId": {
+                    "Ref": "ApiGatewayParameter"
+                },
+                "MethodResponses": [{
+                    "StatusCode": "200",
+                    "ResponseParameters": {
+                        "method.response.header.Access-Control-Allow-Headers": true,
+                        "method.response.header.Access-Control-Allow-Methods": true,
+                        "method.response.header.Access-Control-Allow-Origin": true
+                    }
+                }],
+                "Integration": {
+                    "Type": "MOCK",
+                    "RequestTemplates": {
+                        "application/json": "{\"statusCode\":200}"
+                    },
+                    "IntegrationResponses": [{
+                        "StatusCode": "200",
+                        "ResponseParameters": {
+                            "method.response.header.Access-Control-Allow-Headers": "'Content-Type'",
+                            "method.response.header.Access-Control-Allow-Methods": "'GET,OPTIONS'",
+                            "method.response.header.Access-Control-Allow-Origin": "'*'"
+                        }
+                    }]
+                }
+            }
+        },
+        "ApiGatewayParameterGet": {
+            "Type": "AWS::ApiGateway::Method",
+            "DependsOn": ["ApiGatewayParameter"],
+            "Properties": {
+                "HttpMethod": "GET",
+                "AuthorizationType": "NONE",
+                "RestApiId": {
+                    "Ref": "ApiGatewayRestApi"
+                },
+                "ResourceId": {
+                    "Ref": "ApiGatewayParameter"
+                },
+                "Integration": {
+                    "Type": "AWS_PROXY",
+                    "IntegrationHttpMethod": "POST",
+                    "Uri": {
+                        "Fn::Join": ["", [
+                            "arn:aws:apigateway:",
+                            {
+                                "Ref": "AWS::Region"
+                            },
+                            ":lambda:path/2015-03-31/functions/",
+                            {
+                                "Fn::GetAtt": ["LambdaFunction", "Arn"]
+                            },
+                            "/invocations"
+                        ]]
+                    }
+                }
+            }
+        },
+        "ApiGatewayDeployment": {
+            "Type": "AWS::ApiGateway::Deployment",
+            "DependsOn": ["ApiGatewayRestApi", "ApiGatewayParameterGet", "ApiGatewayParameterOptions", "ApiGatewayResourceOptions"],
+            "Properties": {
+                "RestApiId": {
+                    "Ref": "ApiGatewayRestApi"
+                },
+                "StageName": {
+                    "Ref": "VersionName"
+                },
+                "Description": "Cloud Formation Start Version"
+            }
+        }
+    },
+    "Outputs": {
+        "MicroServicename": {
+            "Description": "Name of Microservice",
+            "Value": {
+                "Fn::FindInMap": ["Environment", "Constant", "Name"]
+            }
+        },
+        "ServiceUrl": {
+            "Description": "Service URL",
+            "Value": {
+                "Fn::Join": ["", [
+                    "https://", {
+                        "Ref": "ApiGatewayRestApi"
+                    }, ".execute-api.", {
+                        "Ref": "AWS::Region"
+                    }, ".amazonaws.com/", {
+                        "Ref": "VersionName"
+                    },
+                    "/", {
+                        "Fn::FindInMap": ["Environment", "Constant", "Name"]
+                    },
+                    "/:statusCode"
+                ]]
+            }
+        }
+    }
+}
